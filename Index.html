@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deteksi Gerak Kepala Saat Ujian</title>
+<style>
+  body { margin: 0; background: #14181c; color: #f2f2f2; font-family: system-ui, sans-serif; text-align: center; }
+  #status { padding: 14px; font-size: 20px; font-weight: 600; background: #37474f; }
+  #status.ok { background: #1b5e20; }
+  #status.warn { background: #b71c1c; }
+  video { width: 100%; max-width: 480px; transform: scaleX(-1); background: #000; }
+  #info { padding: 10px; font-size: 15px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="status">Memuat model...</div>
+<video id="v" autoplay playsinline muted></video>
+<div id="info"></div>
+
+<script type="module">
+import { FaceLandmarker, FilesetResolver } from
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// ===== Atur di sini setelah kalibrasi =====
+const YAW_MIN = 0.35;      // di bawah ini = menoleh satu sisi
+const YAW_MAX = 0.65;      // di atas ini = menoleh sisi lain
+const HOLD_MS = 2000;      // lama menoleh sebelum ditandai
+// ==========================================
+
+const $ = id => document.getElementById(id);
+const status = $("status"), info = $("info"), video = $("v");
+let landmarker, since = null, flagged = false, count = 0, lastTime = -1;
+
+async function init() {
+  const files = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  landmarker = await FaceLandmarker.createFromOptions(files, {
+    baseOptions: { modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" },
+    runningMode: "VIDEO",
+    numFaces: 5
+  });
+  video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+  video.addEventListener("loadeddata", loop);
+}
+
+function loop() {
+  if (video.currentTime !== lastTime) {
+    lastTime = video.currentTime;
+    const res = landmarker.detectForVideo(video, performance.now());
+    check(res.faceLandmarks);
+  }
+  requestAnimationFrame(loop);
+}
+
+function check(faces) {
+  let sus = false, reason = "Normal", yaw = null;
+
+  if (faces.length === 0) { sus = true; reason = "Wajah tidak terdeteksi"; }
+  else if (faces.length > 1) { sus = true; reason = faces.length + " wajah terdeteksi"; }
+  else {
+    const p = faces[0];
+    // posisi hidung (1) relatif terhadap tepi wajah kiri (234) dan kanan (454)
+    yaw = (p[1].x - p[234].x) / (p[454].x - p[234].x);
+    if (yaw < YAW_MIN || yaw > YAW_MAX) { sus = true; reason = "Kepala menoleh"; }
+  }
+
+  const now = performance.now();
+  if (sus) { if (since === null) since = now; } else { since = null; flagged = false; }
+
+  const lama = since ? now - since : 0;
+  if (lama > HOLD_MS) {
+    if (!flagged) { flagged = true; count++; }
+    status.className = "warn";
+    status.textContent = "CURIGA: " + reason;
+  } else {
+    status.className = "ok";
+    status.textContent = "Aman";
+  }
+  info.innerHTML = "Nilai yaw: " + (yaw === null ? "-" : yaw.toFixed(2)) +
+    "<br>Jumlah kejadian curiga: " + count;
+}
+
+init().catch(e => { status.className = "warn"; status.textContent = "Gagal: " + e.message; });
+</script>
+</body>
+</html>
